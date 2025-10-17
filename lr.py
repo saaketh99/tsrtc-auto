@@ -1,74 +1,95 @@
+import os
 import time
+import traceback
+import chromedriver_autoinstaller
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 URL = "https://tgsrtclogistics.co.in/TSRTC/"
-CONSIGNMENT_NUMBER = input("Enter consignment number: ").strip()
+CONS_NUMBER = os.environ.get("CONS_NUMBER")
+
+if not CONS_NUMBER:
+    raise ValueError("CONS_NUMBER environment variable not set")
+
 CONS_FIELD_SELECTOR = (By.ID, "awbNos")
 SUBMIT_BUTTON_SELECTOR = (By.CSS_SELECTOR, "a.btn-tracking")
-SPINNER_SELECTOR = (By.CSS_SELECTOR, "img.preloader__spinner")
-TIMELINE_ITEMS_SELECTOR = (By.CSS_SELECTOR, ".contents .content")
+CONTENT_SELECTOR = (By.CSS_SELECTOR, ".contents .content")
+DATA_SELECTOR = (By.CSS_SELECTOR, ".data")
 
-def main():
+chromedriver_autoinstaller.install()
+
+def run_tracking():
     chrome_options = Options()
-    chrome_options.add_argument("--headless=true") 
-    chrome_options.add_argument("--window-size=1280,1024")
+    chrome_options.add_argument("--headless")  
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    driver = webdriver.Chrome(
-        service=ChromeService(ChromeDriverManager().install()),
-        options=chrome_options
-    )
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/google-chrome")
+
+    driver = webdriver.Chrome(options=chrome_options)
+    results = []
 
     try:
         driver.get(URL)
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 30)
+
+       
         cons_field = wait.until(EC.presence_of_element_located(CONS_FIELD_SELECTOR))
         cons_field.clear()
-        cons_field.send_keys(CONSIGNMENT_NUMBER)
-        print(f" Entered consignment number: {CONSIGNMENT_NUMBER}")
-        try:
-            wait.until(EC.invisibility_of_element_located(SPINNER_SELECTOR))
-        except TimeoutException:
-            pass 
+        cons_field.send_keys(CONS_NUMBER)
+        print(f"Entered consignment number: {CONS_NUMBER}")
+
         submit_btn = wait.until(EC.element_to_be_clickable(SUBMIT_BUTTON_SELECTOR))
         driver.execute_script("arguments[0].click();", submit_btn)
-        print(" Submitted form")
-        time.sleep(2)
-        main_window = driver.current_window_handle
-        all_windows = driver.window_handles
 
-        for handle in all_windows:
-            if handle != main_window:
-                driver.switch_to.window(handle)
-                break
 
-        print(" Results ")
-        wait.until(EC.presence_of_all_elements_located(TIMELINE_ITEMS_SELECTOR))
-        time.sleep(1)  
-        timeline_items = driver.find_elements(*TIMELINE_ITEMS_SELECTOR)
+        if len(driver.window_handles) > 1:
+            driver.switch_to.window(driver.window_handles[-1])
+            print("Switched to new window/tab for results.")
 
-        if timeline_items:
-            for item in timeline_items:
-                try:
-                    title = item.find_element(By.TAG_NAME, "h1").text.strip()
-                    details = item.find_element(By.TAG_NAME, "p").text.strip()
-                    print(f"{title} -> {details}\n")
-                except Exception as e:
-                    print(f" Could not parse an item: {e}")
-        else:
-            print(" No tracking results found.")
-            print(driver.page_source[:2000])
+        try:
+            wait.until(EC.visibility_of_element_located(CONTENT_SELECTOR))
+        except TimeoutException:
+            print("Tracking results container not found.")
+            print(driver.page_source[:1500])
+            return ["No tracking results found."]
 
+        time.sleep(2)  
+        content_blocks = driver.find_elements(*CONTENT_SELECTOR)
+
+        if not content_blocks:
+            print("No tracking content found.")
+            return ["No tracking results found."]
+
+        for block in content_blocks:
+            try:
+                data_div = block.find_element(*DATA_SELECTOR)
+                title = data_div.find_element(By.TAG_NAME, "h1").text.strip()
+                details = data_div.find_element(By.TAG_NAME, "p").text.strip()
+                results.append(f"{title} -> {details}")
+            except NoSuchElementException:
+                continue
+
+    except Exception as e:
+        print("[ERROR] Exception occurred:")
+        traceback.print_exc()
+        return [f"Error: {str(e)}"]
     finally:
         driver.quit()
 
+    return results if results else ["No tracking results found."]
+
 
 if __name__ == "__main__":
-    main()
+    data = run_tracking()
+    if not data:
+        print("No output received.")
+    else:
+        print("\n===== TRACKING RESULTS =====")
+        for r in data:
+            print(r)
